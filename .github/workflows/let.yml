@@ -1,10 +1,12 @@
-name: 🚀 6-Hour SSHX Session Runner (Alpine Linux)
+name: 🚀 6-Hour SSHX Session Runner (Clean Link Output)
 
 # -----------------------------------------------------------------
 # 1. EVENT TRIGGERS
 # -----------------------------------------------------------------
 on:
   schedule:
+    # Runs at ~5.5 hour intervals to restart the session before the 6-hour limit.
+    # The cron expression '30 0,5,11,16,22 * * *' ensures a restart every 5.5 hours.
     - cron: '30 0,5,11,16,22 * * *'
   workflow_dispatch:
 
@@ -15,7 +17,7 @@ jobs:
   sshx_max_duration:
     name: Interactive Debug Shell (sshx)
     runs-on: ubuntu-latest
-    timeout-minutes: 360 
+    timeout-minutes: 360 # 6 hours total duration
 
     container:
       image: alpine/git:latest
@@ -25,35 +27,30 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Install minimal tools: gawk is needed, bash/procps might be useful
+      # Install minimal tools
       - name: Install Dependencies
         run: |
           apk update
           apk add gawk bash procps curl util-linux
 
-      # 1. Install and Start SSHX Session
-      - name: 1. Install and Start SSHX Session
+      # 1. Install and Start SSHX Session in Background
+      - name: 1. Start SSHX Session
         id: start_sshx
         shell: bash
         run: |
-          echo "Installing SSHX with one-liner..."
+          echo "Installing SSHX..."
           curl -sSf https://sshx.io/get | sh
           
           SSHX_LOG="/tmp/sshx_link.log"
-          echo "Starting SSHX session and capturing ALL output to $SSHX_LOG..."
-          
-          # Use 'script' to force a PTY, and send ALL output (stdout/stderr) to the log file
-          > "$SSHX_LOG" # Clear the log file
+          # Start sshx wrapped in 'script' to handle TTY, sending all output to the log file.
+          > "$SSHX_LOG" 
           script -q -c "sshx run --headless" /dev/null > "$SSHX_LOG" 2>&1 &
           
           sleep 5
-          
-          # Set the log path for later use
           echo "sshx_log_file=$SSHX_LOG" >> $GITHUB_OUTPUT
-          echo "SSHX process started in background."
 
-      # 2. Wait for and Extract URL (Crucial Logging Step)
-      - name: 2. Wait for and Extract URL (Logging)
+      # 2. Wait for and Print URL (Success is a clean link print)
+      - name: 2. Get and Print SSHX Link
         id: extract_url
         shell: bash
         run: |
@@ -61,39 +58,34 @@ jobs:
           TIMEOUT=90;
           SSHX_URL="";
           
-          echo "Polling log file for URL (max $TIMEOUT seconds)...";
+          echo "Waiting for SSHX Link...";
           
           for i in $(seq 1 $TIMEOUT); do
             SSHX_URL=$(grep 'Sharing session at:' "$SSHX_LOG" | gawk '{print $NF}' | tail -n 1);
             if [ -n "$SSHX_URL" ] && [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
-              echo "::notice::URL found after $i seconds.";
               break;
             fi
             sleep 1;
           done;
           
-          # Log the URL (or lack thereof) to the GitHub Actions job summary
-          echo "--- SSHX Session Details ---"
-          cat "$SSHX_LOG"
-          
           if [ -n "$SSHX_URL" ] && [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
-            echo "::notice::SSHX URL: $SSHX_URL"
-            # Setting the URL as output for access in the job summary, if needed
+            # 🚨 THIS IS THE CLEAN LINK OUTPUT 🚨
+            echo "SSHX SESSION LINK: $SSHX_URL"
             echo "sshx_url=$SSHX_URL" >> $GITHUB_OUTPUT
-            
-            # Write the URL to a permanent file for visibility in the job artifacts (optional, but helpful)
-            echo $SSHX_URL > /tmp/sshx_url.txt
           else
-            echo "::error::Failed to capture SSHX URL after $TIMEOUT seconds. Check the log content above."
+            echo "::error::Failed to get SSHX link. Check the full job log for errors."
+            # Print the log for debugging ONLY on failure
+            echo "--- FINAL ERROR LOG ---"
+            cat "$SSHX_LOG"
+            echo "-----------------------"
             exit 1;
           fi
 
-      # 3. Keep Job Alive for Max Duration
-      - name: 3. Keep Job Alive for Max Duration
+      # 3. Keep Job Alive for Max Duration (6 hours)
+      - name: 3. Keep Job Alive for 6 Hours
         if: success() 
         run: |
           SSHX_LOG="${{ steps.start_sshx.outputs.sshx_log_file }}"
-          echo "SSHX session is running in the background."
-          echo "The job will now run for the full 6 hours, monitoring the log file to stay alive."
-          # Keeps the job alive by monitoring the log file.
+          echo "SSHX is running. The job will now stay active for 6 hours."
+          # This keeps the job alive until the next scheduled job (5.5 hours) takes over.
           tail -f "$SSHX_LOG"
