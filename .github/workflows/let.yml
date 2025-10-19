@@ -25,11 +25,14 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Install dependencies (util-linux is needed for 'script')
-      - name: Install Dependencies
+      # 🚨 FINAL FIX: Install musl-tools/libc6-compat for the musl binary
+      - name: Install Dependencies (Including MUSL Fix)
         run: |
           apt-get update
-          apt-get install -y curl gawk bash procps util-linux net-tools iproute2
+          # Standard tools + musl compatibility layer (needed for the sshx binary)
+          apt-get install -y curl gawk bash procps util-linux net-tools iproute2 musl musl-tools
+          # We'll also install libc6-compat just in case (though musl tools should cover it)
+          apt-get install -y libc6-compat || true 
 
       # 1. Install and Start SSHX with Error Capture
       - name: 1. Install and Start SSHX with Error Capture
@@ -54,7 +57,7 @@ jobs:
           echo "sshx_log_file=$SSHX_LOG" >> $GITHUB_OUTPUT
           echo "Script wrapper process started with PID: $!"
 
-      # 2. Wait for and Extract URL (90 second Timeout)
+      # 2. Wait for and Extract URL (90 second Timeout + Guaranteed Log Print)
       - name: 2. Wait for and Extract URL (Polling)
         id: extract_url
         shell: bash
@@ -62,7 +65,7 @@ jobs:
           SSHX_LOG="${{ steps.start_sshx.outputs.sshx_log_file }}"
           SSHX_PID="${{ steps.start_sshx.outputs.sshx_pid }}"
           TIMEOUT=90
-          SSHX_URL="" # Initialize URL variable
+          SSHX_URL=""
           
           echo "Polling log file for URL (max $TIMEOUT seconds)..."
           
@@ -76,7 +79,7 @@ jobs:
             sleep 1
           done
           
-          # 🚨 CRITICAL FIX: Print the log content outside the conditional failure block.
+          # CRITICAL: Print the log content outside the conditional block to ensure it's visible.
           echo "--- FINAL $SSHX_LOG content for debug ---"
           cat "$SSHX_LOG"
           echo "------------------------------------------"
@@ -86,7 +89,7 @@ jobs:
             echo "sshx_url=$SSHX_URL" >> $GITHUB_OUTPUT
             echo "::notice::Successfully captured SSHX URL: $SSHX_URL"
           else
-            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds. Please check the log content printed above."
+            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds. CHECK THE LOG CONTENT ABOVE FOR THE ERROR MESSAGE."
             # Kill the background process and fail the step
             kill "$SSHX_PID" 2>/dev/null
             exit 1
