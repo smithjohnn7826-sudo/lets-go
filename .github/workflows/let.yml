@@ -35,7 +35,7 @@ jobs:
           apt-get update
           apt-get install -y curl gawk bash supervisor procps
 
-      # 1. Setup and Start SSHX via Supervisor (Robust Service Management)
+      # 1. Setup and Start SSHX via Supervisor (Uses reliable 'echo' to write config)
       - name: 1. Setup and Start SSHX via Supervisor
         id: setup_sshx
         shell: bash
@@ -46,18 +46,18 @@ jobs:
           curl -sSf -L https://sshx.io/get -o /usr/local/bin/sshx
           chmod +x /usr/local/bin/sshx
           
-          # 2. Define the service configuration
+          # 2. Define the service configuration using sequential echo statements 
+          #    to avoid any heredoc/indentation issues.
           SSHX_LOG_FILE="/tmp/sshx_supervisor.log"
+          CONFIG_FILE="/etc/supervisor/conf.d/sshx.conf"
           
-          cat << EOF > /etc/supervisor/conf.d/sshx.conf
-[program:sshx]
-command=/usr/local/bin/sshx run --headless
-autostart=true
-autorestart=true
-user=root
-stdout_logfile=$SSHX_LOG_FILE
-stderr_logfile=$SSHX_LOG_FILE
-EOF
+          echo "[program:sshx]" > $CONFIG_FILE
+          echo "command=/usr/local/bin/sshx run --headless" >> $CONFIG_FILE
+          echo "autostart=true" >> $CONFIG_FILE
+          echo "autorestart=true" >> $CONFIG_FILE
+          echo "user=root" >> $CONFIG_FILE
+          echo "stdout_logfile=$SSHX_LOG_FILE" >> $CONFIG_FILE
+          echo "stderr_logfile=$SSHX_LOG_FILE" >> $CONFIG_FILE
           
           # 3. Start the supervisor and the sshx service
           service supervisor start
@@ -100,7 +100,7 @@ EOF
             exit 1
           fi
 
-      # 3. Send URL to Discord Webhook (Now includes the Run Workflow link)
+      # 3. Send URL to Discord Webhook (Includes Run Workflow link)
       - name: 3. Send URL to Discord Webhook
         if: success() && steps.extract_url.outputs.sshx_url != ''
         env:
