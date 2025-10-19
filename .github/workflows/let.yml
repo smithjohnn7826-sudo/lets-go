@@ -25,46 +25,46 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Install dependencies (curl, gawk, bash, procps)
+      # Install dependencies (curl, gawk, bash, procps, and 'script' for the TTY wrapper)
       - name: Install Dependencies
         run: |
           apt-get update
-          apt-get install -y curl gawk bash procps
+          apt-get install -y curl gawk bash procps util-linux # util-linux contains the 'script' command
 
-      # 1. Install and Start SSHX in Background
-      - name: 1. Install and Start SSHX in Background
+      # 1. Install and Start SSHX with TTY Wrapper
+      - name: 1. Install and Start SSHX with TTY Wrapper
         id: start_sshx
         shell: bash
         run: |
           echo "Installing SSHX with one-liner..."
-          # 1. Install sshx (often installs to /usr/local/bin)
           curl -sSf https://sshx.io/get | sh
           
           SSHX_LOG="/tmp/sshx_link.log"
-          echo "Starting SSHX session and capturing output to $SSHX_LOG..."
+          echo "Starting SSHX session using TTY wrapper and capturing output to $SSHX_LOG..."
           
-          # 2. Run the binary in the background and redirect output
+          # 🚨 FIX: Use 'script' to force a PTY (pseudo-terminal) for reliable execution 
+          # This should ensure the networking output is properly captured.
           > "$SSHX_LOG" # Clear the log file
-          sshx run --headless > "$SSHX_LOG" 2>&1 &
+          script -q -c "sshx run --headless" /dev/null > "$SSHX_LOG" 2>&1 &
           
-          # 3. Set the process ID (PID) and log path
-          echo "sshx_pid=$!" >> $GITHUB_OUTPUT
+          # Set the process ID (PID) and log path
+          # Since 'script' is running, the PID is of the script command, but we'll capture it anyway.
+          echo "sshx_pid=$!" >> $GITHUB_OUTPUT 
           echo "sshx_log_file=$SSHX_LOG" >> $GITHUB_OUTPUT
-          echo "SSHX process started with PID: $!"
+          echo "Script wrapper process started with PID: $!"
 
-      # 2. Wait for and Extract URL
+      # 2. Wait for and Extract URL (Increased Timeout)
       - name: 2. Wait for and Extract URL (Polling)
         id: extract_url
         shell: bash
         run: |
           SSHX_LOG="${{ steps.start_sshx.outputs.sshx_log_file }}"
           SSHX_PID="${{ steps.start_sshx.outputs.sshx_pid }}"
-          TIMEOUT=60
+          TIMEOUT=90 # Increased timeout
           
           echo "Polling log file for URL (max $TIMEOUT seconds)..."
           
           for i in $(seq 1 $TIMEOUT); do
-            # Extract the URL from the log file
             SSHX_URL=$(grep 'Sharing session at:' "$SSHX_LOG" | gawk '{print $NF}' | tail -n 1)
             
             if [ -n "$SSHX_URL" ] && [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
