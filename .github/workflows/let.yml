@@ -97,28 +97,35 @@ EOF
             echo "--- $SSHX_LOG content for final debug ---"
             cat "$SSHX_LOG"
             echo "-------------------------------------------"
-            # Supervisor is running, no need to manually kill the process.
             exit 1
           fi
 
-      # 3. Send URL to Discord Webhook (Corrected and validated syntax)
+      # 3. Send URL to Discord Webhook (Now includes the Run Workflow link)
       - name: 3. Send URL to Discord Webhook
         if: success() && steps.extract_url.outputs.sshx_url != ''
         env:
-          URL: ${{ steps.extract_url.outputs.sshx_url }}
+          SSHX_URL: ${{ steps.extract_url.outputs.sshx_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           WEBHOOK_DATA='{
             "content": "**New SSHX Session Started!** 🚀",
             "embeds": [{
               "title": "Connect to Runner",
               "description": "The 6-hour high-resource debugging session has started. **RECONNECT NOW** to the new link.",
-              "url": "${{ env.URL }}",
+              "url": "${{ env.SSHX_URL }}",
               "color": 3447003,
-              "fields": [{
-                "name": "Link",
-                "value": "[Click to Connect](${{ env.URL }})",
-                "inline": false
-              }]
+              "fields": [
+                {
+                  "name": "SSHX Link",
+                  "value": "[Click to Connect](${{ env.SSHX_URL }})",
+                  "inline": false
+                },
+                {
+                  "name": "Run Workflow Link",
+                  "value": "[View Job Logs](${{ env.RUN_URL }})",
+                  "inline": false
+                }
+              ]
             }]
           }'
           
@@ -131,5 +138,4 @@ EOF
         if: success() 
         run: |
           echo "SSHX session is running and managed by Supervisor. Job will run for the full 6 hours."
-          # Keeps the job alive by monitoring the supervisor log file.
           tail -f /tmp/sshx_supervisor.log
