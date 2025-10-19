@@ -25,16 +25,15 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Install bash and other dependencies
       - name: Install Dependencies
         run: |
           apt-get update
-          # Install curl, gawk, and bash (needed for the next step's shell: bash)
+          # Install curl, gawk, bash, and procps
           apt-get install -y curl gawk bash procps
 
       - name: 1. Start SSHX in Background
         id: start_sshx
-        shell: bash # Explicitly use bash to avoid shell-compatibility issues
+        shell: bash
         run: |
           echo "Starting SSHX session..."
           
@@ -52,38 +51,46 @@ jobs:
           echo "sshx_pid=$!" >> $GITHUB_OUTPUT
           echo "SSHX process started with PID: $!"
 
-      # 🚨 NEW: Wait for the URL to appear in the log file
-      # This Action is much better at polling than a manual shell loop
-      - name: 2. Wait for SSHX URL to Appear
-        id: wait_for_url
-        uses: jakejarvis/wait-action@master
-        with:
-          time: '30s' # Maximum time to wait
-          condition: 'grep "Sharing session at:" /tmp/sshx_link.log'
-      
-      - name: 3. Extract and Validate URL
+      # 🚨 FIX: Polling logic is back, using POSIX [ ... ] for reliable conditional tests
+      - name: 2. Wait for and Extract URL (POSIX-Compliant Polling)
         id: extract_url
-        shell: bash # Use bash for the conditional logic
+        shell: bash
         run: |
           SSHX_LOG="/tmp/sshx_link.log"
+          SSHX_PID="${{ steps.start_sshx.outputs.sshx_pid }}"
+          TIMEOUT=30
           
-          # Extract the URL. If the wait-action succeeded, the URL should be here.
-          SSHX_URL=$(grep 'Sharing session at:' "$SSHX_LOG" | gawk '{print $NF}')
+          echo "Polling log file for URL (max $TIMEOUT seconds)..."
           
-          # Validate the URL
-          if [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
+          # Loop for a maximum of 30 seconds
+          for i in $(seq 1 $TIMEOUT); do
+            # Extract the URL
+            SSHX_URL=$(grep 'Sharing session at:' "$SSHX_LOG" | gawk '{print $NF}')
+            
+            # Use POSIX-compliant single bracket [ ... ] test for reliable comparison
+            if [ -n "$SSHX_URL" ] && [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
+              echo "URL found after $i seconds."
+              break
+            fi
+            sleep 1
+          done
+          
+          # Final Validation and Output
+          if [ -n "$SSHX_URL" ] && [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
             echo "sshx_url=$SSHX_URL" >> $GITHUB_OUTPUT
             echo "::notice::Successfully captured SSHX URL: $SSHX_URL"
           else
-            echo "::error::Failed to capture sshx URL. Log content is below."
-            echo "--- $SSHX_LOG content ---"
+            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds."
+            echo "--- $SSHX_LOG content for final debug ---"
             cat "$SSHX_LOG"
-            echo "-------------------------"
+            echo "-------------------------------------------"
+            # Kill the background process and fail the step
+            kill "$SSHX_PID" 2>/dev/null
             exit 1
           fi
 
-      - name: 4. Send URL to Discord Webhook
-        # This step is now isolated and will only run if the URL was extracted (Step 3 succeeded)
+      - name: 3. Send URL to Discord Webhook
+        # Now uses the output from the newly renamed step 2
         if: success() && steps.extract_url.outputs.sshx_url != ''
         env:
           URL: ${{ steps.extract_url.outputs.sshx_url }}
@@ -107,9 +114,8 @@ jobs:
                -d "$WEBHOOK_DATA" \
                ${{ secrets.DISCORD_WEBHOOK_URL }}
 
-      - name: 5. Keep Job Alive for Max Duration
+      - name: 4. Keep Job Alive for Max Duration
         if: success() 
         run: |
           echo "SSHX session is running in the background. Job will run for the full 6 hours."
-          # Keeps the job alive by tailing the log file.
           tail -f /tmp/sshx_link.log
