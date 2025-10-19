@@ -6,7 +6,6 @@ name: 🚀 6-Hour SSHX Session Runner (Clean Link Output)
 on:
   schedule:
     # Runs at ~5.5 hour intervals to restart the session before the 6-hour limit.
-    # The cron expression '30 0,5,11,16,22 * * *' ensures a restart every 5.5 hours.
     - cron: '30 0,5,11,16,22 * * *'
   workflow_dispatch:
 
@@ -27,12 +26,13 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Install minimal tools
-      - name: Install Dependencies
+      # 🚨 FINAL FIX: Adding a broad range of common networking tools 🚨
+      - name: Install Dependencies (Full Network Stack)
         run: |
           apk update
-          apk add gawk bash procps curl util-linux
-
+          # Broad list of packages often needed for low-level networking in containers
+          apk add gawk bash procps curl util-linux iproute2 net-tools bind-tools
+          
       # 1. Install and Start SSHX Session in Background
       - name: 1. Start SSHX Session
         id: start_sshx
@@ -73,7 +73,7 @@ jobs:
             echo "SSHX SESSION LINK: $SSHX_URL"
             echo "sshx_url=$SSHX_URL" >> $GITHUB_OUTPUT
           else
-            echo "::error::Failed to get SSHX link. Check the full job log for errors."
+            echo "::error::Failed to get SSHX link. The full error log is printed below."
             # Print the log for debugging ONLY on failure
             echo "--- FINAL ERROR LOG ---"
             cat "$SSHX_LOG"
