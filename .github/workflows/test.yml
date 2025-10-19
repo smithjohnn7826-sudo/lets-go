@@ -1,0 +1,66 @@
+jobs:
+  sshx_max_duration:
+    name: Interactive Debug Shell (sshx)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # 6 hours max duration
+
+    steps:
+      - name: 1. Setup and Get SSHX Link
+        id: sshx_setup
+        run: |
+          # 1. Start sshx in a separate process and capture its output (the link)
+          curl -sSf https://sshx.io/get | sh -s run --headless > /tmp/sshx_link.log 2>&1 &
+          SSHX_PID=$!
+          
+          # 2. Wait a few seconds for the link to be printed to the log file
+          sleep 10
+          
+          # 3. Extract the URL from the log file
+          SSHX_URL=$(grep 'Sharing session at:' /tmp/sshx_link.log | awk '{print $NF}')
+          
+          # 4. Set the URL as an output variable for the next steps
+          if [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
+            echo "sshx_url=$SSHX_URL" >> $GITHUB_OUTPUT
+            echo "SSHX process is running with PID: $SSHX_PID"
+          else
+            echo "::error::Failed to capture sshx URL."
+            # Optionally kill the process if the URL wasn't found
+            kill $SSHX_PID
+            exit 1
+          fi
+
+      - name: 2. Send URL to Discord
+        # Only runs if the previous step successfully set the sshx_url output
+        if: success() && steps.sshx_setup.outputs.sshx_url != ''
+        env:
+          URL: ${{ steps.sshx_setup.outputs.sshx_url }}
+        run: |
+          WEBHOOK_DATA='{
+            "content": "**New SSHX Session Started!** 🚀",
+            "embeds": [{
+              "title": "Connect to Runner",
+              "description": "The 6-hour session has started. **RECONNECT NOW** to the new link.",
+              "url": "${{ env.URL }}",
+              "color": 3447003,
+              "fields": [{
+                "name": "Link",
+                "value": "[Click to Connect](${{ env.URL }})",
+                "inline": false
+              }]
+            }]
+          }'
+          
+          # Use the securely stored secret to send the notification
+          curl -H "Content-Type: application/json" \
+               -d "$WEBHOOK_DATA" \
+               ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+      - name: 3. Keep Job Alive for Max Duration
+        # This step is the "blocker" that runs for the remaining time
+        if: success()
+        run: |
+          echo "SSHX session is running in the background. Job will continue for ~6 hours."
+          # Wait until the GitHub Actions job timeout is reached
+          # We use `tail -f` on the log file to ensure continuous log activity
+          # which prevents some runner inactivity timeouts.
+          tail -f /tmp/sshx_link.log
