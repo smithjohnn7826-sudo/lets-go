@@ -1,15 +1,11 @@
 name: 🚀 6-Hour SSHX Discord Notifier (Debian 13)
 
 # -----------------------------------------------------------------
-# 1. EVENT TRIGGERS (When the job runs)
+# 1. EVENT TRIGGERS
 # -----------------------------------------------------------------
 on:
-  # Schedule: Runs automatically to restart the session before the 6-hour limit.
   schedule:
-    # Runs at 30 minutes past 0, 5, 11, 16, and 22 o'clock UTC (~5.5 hour intervals)
     - cron: '30 0,5,11,16,22 * * *'
-    
-  # Manual: Allows you to start the job instantly from the Actions tab.
   workflow_dispatch:
 
 # -----------------------------------------------------------------
@@ -18,62 +14,67 @@ on:
 jobs:
   sshx_max_duration:
     name: Interactive Debug Shell (sshx)
-    runs-on: ubuntu-latest # The host runner remains Ubuntu for stability
+    runs-on: ubuntu-latest
     timeout-minutes: 360 
 
-    # 🚨 DEBIAN CONTAINER CONFIGURATION 🚨
-    # This instructs the job to run all steps inside the specified Debian image.
     container:
-      image: debian:13 # Uses the latest Debian stable release: Debian 13 "Trixie"
-      options: --user root # Necessary for installing packages and running as root
+      image: debian:13
+      options: --user root
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Install curl and procps (for 'kill'), as minimal Debian images may lack them
+      # 🚨 FIX: Ensure all required utilities (curl, procps, awk) are installed
       - name: Install Dependencies
         run: |
           apt-get update
-          apt-get install -y curl procps
+          # Install curl, procps (for kill), and gawk (sometimes standard awk is minimal)
+          apt-get install -y curl procps gawk
 
-      - name: 1. Start SSHX and Capture Link (Robust Version)
+      # 🚨 FIX: Separate download and execution for stability
+      - name: 1. Start SSHX and Capture Link (Most Stable Version)
         id: sshx_setup 
         run: |
           echo "Starting SSHX session and capturing URL..."
           
-          # Run the command in the background, redirecting output to a log file.
-          (curl -sSf https://sshx.io/get | sh -s run --headless) > /tmp/sshx_link.log 2>&1 &
+          # 1. Download the sshx binary and make it executable
+          curl -sSf -L https://sshx.io/get -o /usr/local/bin/sshx
+          chmod +x /usr/local/bin/sshx
+          
+          # 2. Run the binary directly in the background
+          # We use /usr/local/bin/sshx run --headless instead of the piping method
+          /usr/local/bin/sshx run --headless > /tmp/sshx_link.log 2>&1 &
           SSHX_PID=$!
           
-          # Wait 15 seconds for the sshx service to fully initialize
+          # 3. Wait 15 seconds for the service to fully initialize
           sleep 15
           
-          # Check if the log file was created
+          # 4. Check for log file existence
           if [ ! -f /tmp/sshx_link.log ]; then
-              echo "::error::Log file was not created. SSHX may have failed immediately."
+              echo "::error::Log file was not created."
               exit 1
           fi
           
-          # Extract the URL. The $NF (Net Field) is the URL itself.
-          SSHX_URL=$(grep 'Sharing session at:' /tmp/sshx_link.log | awk '{print $NF}')
+          # 5. Extract the URL using gawk for reliability
+          # NOTE: Using 'gawk' (GNU awk) for maximum compatibility
+          SSHX_URL=$(grep 'Sharing session at:' /tmp/sshx_link.log | gawk '{print $NF}')
           
-          # Validate and set the output.
+          # 6. Validate and set the output.
           if [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
             echo "sshx_url=$SSHX_URL" >> $GITHUB_OUTPUT
             echo "Successfully captured SSHX URL: $SSHX_URL"
           else
             echo "::error::Failed to capture sshx URL."
             echo "--- /tmp/sshx_link.log content for debug ---"
-            cat /tmp/sshx_link.log # Print log for debugging the failure
+            cat /tmp/sshx_link.log
             echo "-------------------------------------------"
-            # Ensure we kill the background process if it failed to get the URL
+            # Kill the background process and fail the step
             kill $SSHX_PID 2>/dev/null
             exit 1
           fi
 
       - name: 2. Send URL to Discord Webhook
-        # Only runs if the previous step successfully provided a link
         if: success() && steps.sshx_setup.outputs.sshx_url != ''
         env:
           URL: ${{ steps.sshx_setup.outputs.sshx_url }}
@@ -93,15 +94,12 @@ jobs:
             }]
           }'
           
-          # Use the securely stored secret to send the notification
           curl -H "Content-Type: application/json" \
                -d "$WEBHOOK_DATA" \
                ${{ secrets.DISCORD_WEBHOOK_URL }}
 
       - name: 3. Keep Job Alive for Max Duration
-        # Must run for the full 6 hours to keep the SSHX session alive.
         if: success() 
         run: |
           echo "SSHX session is running in the background. Job will run for the full 6 hours."
-          # This command monitors the log file and prevents GitHub from timing out the job.
           tail -f /tmp/sshx_link.log
