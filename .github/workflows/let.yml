@@ -29,10 +29,10 @@ jobs:
       - name: Install Dependencies
         run: |
           apt-get update
-          apt-get install -y curl gawk bash procps util-linux # util-linux contains the 'script' command
+          apt-get install -y curl gawk bash procps util-linux net-tools iproute2
 
-      # 1. Install and Start SSHX with TTY Wrapper
-      - name: 1. Install and Start SSHX with TTY Wrapper
+      # 1. Install and Start SSHX with Error Capture
+      - name: 1. Install and Start SSHX with Error Capture
         id: start_sshx
         shell: bash
         run: |
@@ -40,20 +40,30 @@ jobs:
           curl -sSf https://sshx.io/get | sh
           
           SSHX_LOG="/tmp/sshx_link.log"
-          echo "Starting SSHX session using TTY wrapper and capturing output to $SSHX_LOG..."
+          echo "Starting SSHX session and capturing ALL output to $SSHX_LOG..."
           
-          # 🚨 FIX: Use 'script' to force a PTY (pseudo-terminal) for reliable execution 
-          # This should ensure the networking output is properly captured.
+          # Use 'script' to force a PTY, and send ALL output (stdout and stderr) to the log file
           > "$SSHX_LOG" # Clear the log file
           script -q -c "sshx run --headless" /dev/null > "$SSHX_LOG" 2>&1 &
           
+          # Give it a brief moment to crash, if it's going to.
+          sleep 5
+          
+          # Check if the log file contains an error before we even start the main poll.
+          if grep -q "Error" "$SSHX_LOG"; then
+              echo "::error::Immediate startup error detected!"
+              echo "--- Immediate $SSHX_LOG content for debug ---"
+              cat "$SSHX_LOG"
+              echo "------------------------------------------------"
+              # Do NOT exit here, let the next step poll just in case.
+          fi
+          
           # Set the process ID (PID) and log path
-          # Since 'script' is running, the PID is of the script command, but we'll capture it anyway.
           echo "sshx_pid=$!" >> $GITHUB_OUTPUT 
           echo "sshx_log_file=$SSHX_LOG" >> $GITHUB_OUTPUT
           echo "Script wrapper process started with PID: $!"
 
-      # 2. Wait for and Extract URL (Increased Timeout)
+      # 2. Wait for and Extract URL (90 second Timeout)
       - name: 2. Wait for and Extract URL (Polling)
         id: extract_url
         shell: bash
@@ -79,11 +89,11 @@ jobs:
             echo "sshx_url=$SSHX_URL" >> $GITHUB_OUTPUT
             echo "::notice::Successfully captured SSHX URL: $SSHX_URL"
           else
-            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds. Final log content is below."
-            echo "--- $SSHX_LOG content for final debug ---"
+            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds. FINAL log content is critical for debugging."
+            echo "--- $SSHX_LOG content ---"
             cat "$SSHX_LOG"
-            echo "-------------------------------------------"
-            # Kill the background process if it failed and exit
+            echo "-------------------------"
+            # Kill the background process and fail the step
             kill "$SSHX_PID" 2>/dev/null
             exit 1
           fi
