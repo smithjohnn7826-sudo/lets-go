@@ -1,4 +1,4 @@
-name: 🚀 6-Hour SSHX Discord Notifier (Debian 13)
+name: 🚀 6-Hour SSHX Discord Notifier (Alpine Linux)
 
 # -----------------------------------------------------------------
 # 1. EVENT TRIGGERS
@@ -17,22 +17,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360 
 
+    # 🚨 FINAL FIX: Switching to Alpine Linux for native musl support 🚨
     container:
-      image: debian:13
+      image: alpine/git:latest
       options: --user root
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 🚨 FINAL FIX: Install musl-tools/libc6-compat for the musl binary
-      - name: Install Dependencies (Including MUSL Fix)
+      # Install minimal tools: gawk is needed, bash/procps might be useful
+      - name: Install Dependencies
         run: |
-          apt-get update
-          # Standard tools + musl compatibility layer (needed for the sshx binary)
-          apt-get install -y curl gawk bash procps util-linux net-tools iproute2 musl musl-tools
-          # We'll also install libc6-compat just in case (though musl tools should cover it)
-          apt-get install -y libc6-compat || true 
+          apk update
+          apk add gawk bash procps curl util-linux
 
       # 1. Install and Start SSHX with Error Capture
       - name: 1. Install and Start SSHX with Error Capture
@@ -40,6 +38,7 @@ jobs:
         shell: bash
         run: |
           echo "Installing SSHX with one-liner..."
+          # The install script now runs natively on Alpine's musl environment
           curl -sSf https://sshx.io/get | sh
           
           SSHX_LOG="/tmp/sshx_link.log"
@@ -49,7 +48,6 @@ jobs:
           > "$SSHX_LOG" # Clear the log file
           script -q -c "sshx run --headless" /dev/null > "$SSHX_LOG" 2>&1 &
           
-          # Give it a brief moment to stabilize or crash.
           sleep 5
           
           # Set the process ID (PID) and log path
@@ -79,7 +77,7 @@ jobs:
             sleep 1
           done
           
-          # CRITICAL: Print the log content outside the conditional block to ensure it's visible.
+          # Print the log content to see if it finally worked or failed with a network message
           echo "--- FINAL $SSHX_LOG content for debug ---"
           cat "$SSHX_LOG"
           echo "------------------------------------------"
@@ -89,8 +87,7 @@ jobs:
             echo "sshx_url=$SSHX_URL" >> $GITHUB_OUTPUT
             echo "::notice::Successfully captured SSHX URL: $SSHX_URL"
           else
-            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds. CHECK THE LOG CONTENT ABOVE FOR THE ERROR MESSAGE."
-            # Kill the background process and fail the step
+            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds. Please check the log content printed above."
             kill "$SSHX_PID" 2>/dev/null
             exit 1
           fi
@@ -134,5 +131,4 @@ jobs:
         run: |
           SSHX_LOG="${{ steps.start_sshx.outputs.sshx_log_file }}"
           echo "SSHX session is running in the background. Job will run for the full 6 hours."
-          # Keeps the job alive by monitoring the log file.
           tail -f "$SSHX_LOG"
