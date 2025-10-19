@@ -25,49 +25,49 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 🚨 FIX: Ensure all required utilities (curl, procps, awk) are installed
       - name: Install Dependencies
         run: |
           apt-get update
-          # Install curl, procps (for kill), and gawk (sometimes standard awk is minimal)
+          # Install curl, procps (for kill), and gawk (for reliable awk execution)
           apt-get install -y curl procps gawk
 
-      # 🚨 FIX: Separate download and execution for stability
-      - name: 1. Start SSHX and Capture Link (Most Stable Version)
+      # 🚨 PERMANENT FIX APPLIED HERE 🚨
+      - name: 1. Start SSHX and Capture Link (Polling Version)
         id: sshx_setup 
         run: |
           echo "Starting SSHX session and capturing URL..."
+          
+          SSHX_LOG="/tmp/sshx_link.log"
+          TIMEOUT=30
           
           # 1. Download the sshx binary and make it executable
           curl -sSf -L https://sshx.io/get -o /usr/local/bin/sshx
           chmod +x /usr/local/bin/sshx
           
-          # 2. Run the binary directly in the background
-          # We use /usr/local/bin/sshx run --headless instead of the piping method
-          /usr/local/bin/sshx run --headless > /tmp/sshx_link.log 2>&1 &
+          # 2. Clear any old log file and run the binary in the background
+          > "$SSHX_LOG" # Create/clear the file immediately
+          /usr/local/bin/sshx run --headless > "$SSHX_LOG" 2>&1 &
           SSHX_PID=$!
           
-          # 3. Wait 15 seconds for the service to fully initialize
-          sleep 15
+          # 3. POLLING LOOP: Wait for the URL to appear (max 30 seconds)
+          echo "Polling log file for URL..."
+          for i in $(seq 1 $TIMEOUT); do
+            SSHX_URL=$(grep 'Sharing session at:' "$SSHX_LOG" | gawk '{print $NF}')
+            if [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
+              echo "URL found after $i seconds."
+              break
+            fi
+            sleep 1
+          done
           
-          # 4. Check for log file existence
-          if [ ! -f /tmp/sshx_link.log ]; then
-              echo "::error::Log file was not created."
-              exit 1
-          fi
-          
-          # 5. Extract the URL using gawk for reliability
-          # NOTE: Using 'gawk' (GNU awk) for maximum compatibility
-          SSHX_URL=$(grep 'Sharing session at:' /tmp/sshx_link.log | gawk '{print $NF}')
-          
-          # 6. Validate and set the output.
+          # 4. Final Validation and Output
           if [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
             echo "sshx_url=$SSHX_URL" >> $GITHUB_OUTPUT
             echo "Successfully captured SSHX URL: $SSHX_URL"
           else
-            echo "::error::Failed to capture sshx URL."
-            echo "--- /tmp/sshx_link.log content for debug ---"
-            cat /tmp/sshx_link.log
+            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds."
+            echo "--- $SSHX_LOG content for final debug ---"
+            cat "$SSHX_LOG"
             echo "-------------------------------------------"
             # Kill the background process and fail the step
             kill $SSHX_PID 2>/dev/null
@@ -102,4 +102,5 @@ jobs:
         if: success() 
         run: |
           echo "SSHX session is running in the background. Job will run for the full 6 hours."
+          # This command monitors the log file and prevents GitHub from timing out the job.
           tail -f /tmp/sshx_link.log
