@@ -16,7 +16,6 @@ on:
 jobs:
   sshx_max_duration:
     name: Interactive Debug Shell (sshx)
-    # The host runner is Ubuntu, but the work runs inside Debian.
     runs-on: ubuntu-latest
     timeout-minutes: 360 
 
@@ -29,13 +28,14 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Install supervisor and all dependencies
+      # 🚨 FIX: Installing crucial network dependencies (iproute2, net-tools)
       - name: Install Dependencies and Supervisor
         run: |
           apt-get update
-          apt-get install -y curl gawk bash supervisor procps
+          # net-tools and iproute2 are often missing in minimal containers and needed for networking
+          apt-get install -y curl gawk bash supervisor procps iproute2 net-tools
 
-      # 1. Setup and Start SSHX via Supervisor (Uses reliable 'echo' to write config)
+      # 1. Setup and Start SSHX via Supervisor
       - name: 1. Setup and Start SSHX via Supervisor
         id: setup_sshx
         shell: bash
@@ -46,8 +46,7 @@ jobs:
           curl -sSf -L https://sshx.io/get -o /usr/local/bin/sshx
           chmod +x /usr/local/bin/sshx
           
-          # 2. Define the service configuration using sequential echo statements 
-          #    to avoid any heredoc/indentation issues.
+          # 2. Define the service configuration
           SSHX_LOG_FILE="/tmp/sshx_supervisor.log"
           CONFIG_FILE="/etc/supervisor/conf.d/sshx.conf"
           
@@ -63,11 +62,23 @@ jobs:
           service supervisor start
           supervisorctl reread
           supervisorctl update
+          
+          # Wait a moment and confirm the process is running
+          sleep 5
+          if supervisorctl status sshx | grep -q "RUNNING"; then
+              echo "SSHX process confirmed running."
+          else
+              echo "::error::SSHX process failed to start under Supervisor."
+              echo "Supervisor Status:"
+              supervisorctl status
+              exit 1
+          fi
+
           echo "SSHX service is starting. Logs are at $SSHX_LOG_FILE"
           echo "sshx_log_file=$SSHX_LOG_FILE" >> $GITHUB_OUTPUT
 
-      # 2. Wait for and Extract URL (POSIX-Compliant Polling)
-      - name: 2. Wait for and Extract URL (POSIX-Compliant Polling)
+      # 2. Wait for and Extract URL (Polling)
+      - name: 2. Wait for and Extract URL (Polling)
         id: extract_url
         shell: bash
         run: |
@@ -80,7 +91,6 @@ jobs:
             # Extract the URL from the supervisor log (get the last match)
             SSHX_URL=$(grep 'Sharing session at:' "$SSHX_LOG" | gawk '{print $NF}' | tail -n 1)
             
-            # Use robust conditional checks
             if [ -n "$SSHX_URL" ] && [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
               echo "URL found after $i seconds."
               break
@@ -93,14 +103,14 @@ jobs:
             echo "sshx_url=$SSHX_URL" >> $GITHUB_OUTPUT
             echo "::notice::Successfully captured SSHX URL: $SSHX_URL"
           else
-            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds."
+            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds. Final log content is below."
             echo "--- $SSHX_LOG content for final debug ---"
             cat "$SSHX_LOG"
             echo "-------------------------------------------"
-            exit 1
+            exit 1 # This is why your job is failing! The URL isn't there.
           fi
 
-      # 3. Send URL to Discord Webhook (Includes Run Workflow link)
+      # 3. Send URL to Discord Webhook
       - name: 3. Send URL to Discord Webhook
         if: success() && steps.extract_url.outputs.sshx_url != ''
         env:
