@@ -19,7 +19,7 @@ jobs:
 
     container:
       image: debian:13
-      options: --user root
+      options: --user root # Run as root inside container for full permissions
 
     steps:
       - name: Checkout Code
@@ -29,57 +29,64 @@ jobs:
       - name: Install Dependencies
         run: |
           apt-get update
-          # Install bash to ensure it's available for the next step's shell override
-          apt-get install -y curl procps gawk bash 
+          # Install curl, gawk, and bash (needed for the next step's shell: bash)
+          apt-get install -y curl gawk bash procps
 
-      # 🚨 FINAL FIX APPLIED HERE: shell: bash 🚨
-      - name: 1. Start SSHX and Capture Link (Polling Version)
-        id: sshx_setup 
-        shell: bash # <--- THIS FIXES THE "[[ not found" ERROR
+      - name: 1. Start SSHX in Background
+        id: start_sshx
+        shell: bash # Explicitly use bash to avoid shell-compatibility issues
         run: |
-          echo "Starting SSHX session and capturing URL..."
+          echo "Starting SSHX session..."
           
           SSHX_LOG="/tmp/sshx_link.log"
-          TIMEOUT=30
           
-          # 1. Download the sshx binary and make it executable
+          # Download the sshx binary and make it executable
           curl -sSf -L https://sshx.io/get -o /usr/local/bin/sshx
           chmod +x /usr/local/bin/sshx
           
-          # 2. Clear any old log file and run the binary in the background
-          > "$SSHX_LOG" # Create/clear the file immediately
+          # Run the binary in the background and redirect output
+          > "$SSHX_LOG" 
           /usr/local/bin/sshx run --headless > "$SSHX_LOG" 2>&1 &
-          SSHX_PID=$!
           
-          # 3. POLLING LOOP: Wait for the URL to appear (max 30 seconds)
-          echo "Polling log file for URL..."
-          for i in $(seq 1 $TIMEOUT); do
-            SSHX_URL=$(grep 'Sharing session at:' "$SSHX_LOG" | gawk '{print $NF}')
-            if [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
-              echo "URL found after $i seconds."
-              break
-            fi
-            sleep 1
-          done
+          # Set the process ID (PID) as an output for cleanup/killing later
+          echo "sshx_pid=$!" >> $GITHUB_OUTPUT
+          echo "SSHX process started with PID: $!"
+
+      # 🚨 NEW: Wait for the URL to appear in the log file
+      # This Action is much better at polling than a manual shell loop
+      - name: 2. Wait for SSHX URL to Appear
+        id: wait_for_url
+        uses: jakejarvis/wait-action@master
+        with:
+          time: '30s' # Maximum time to wait
+          condition: 'grep "Sharing session at:" /tmp/sshx_link.log'
+      
+      - name: 3. Extract and Validate URL
+        id: extract_url
+        shell: bash # Use bash for the conditional logic
+        run: |
+          SSHX_LOG="/tmp/sshx_link.log"
           
-          # 4. Final Validation and Output
+          # Extract the URL. If the wait-action succeeded, the URL should be here.
+          SSHX_URL=$(grep 'Sharing session at:' "$SSHX_LOG" | gawk '{print $NF}')
+          
+          # Validate the URL
           if [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
             echo "sshx_url=$SSHX_URL" >> $GITHUB_OUTPUT
-            echo "Successfully captured SSHX URL: $SSHX_URL"
+            echo "::notice::Successfully captured SSHX URL: $SSHX_URL"
           else
-            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds."
-            echo "--- $SSHX_LOG content for final debug ---"
+            echo "::error::Failed to capture sshx URL. Log content is below."
+            echo "--- $SSHX_LOG content ---"
             cat "$SSHX_LOG"
-            echo "-------------------------------------------"
-            # Kill the background process and fail the step
-            kill $SSHX_PID 2>/dev/null
+            echo "-------------------------"
             exit 1
           fi
 
-      - name: 2. Send URL to Discord Webhook
-        if: success() && steps.sshx_setup.outputs.sshx_url != ''
+      - name: 4. Send URL to Discord Webhook
+        # This step is now isolated and will only run if the URL was extracted (Step 3 succeeded)
+        if: success() && steps.extract_url.outputs.sshx_url != ''
         env:
-          URL: ${{ steps.sshx_setup.outputs.sshx_url }}
+          URL: ${{ steps.extract_url.outputs.sshx_url }}
         run: |
           WEBHOOK_DATA='{
             "content": "**New SSHX Session Started!** 🚀",
@@ -100,8 +107,9 @@ jobs:
                -d "$WEBHOOK_DATA" \
                ${{ secrets.DISCORD_WEBHOOK_URL }}
 
-      - name: 3. Keep Job Alive for Max Duration
+      - name: 5. Keep Job Alive for Max Duration
         if: success() 
         run: |
           echo "SSHX session is running in the background. Job will run for the full 6 hours."
+          # Keeps the job alive by tailing the log file.
           tail -f /tmp/sshx_link.log
