@@ -1,13 +1,11 @@
 name: 🚀 6-Hour SSHX Discord Notifier (Debian 13)
 
 # -----------------------------------------------------------------
-# 1. EVENT TRIGGERS (When the job runs)
+# 1. EVENT TRIGGERS
 # -----------------------------------------------------------------
 on:
   schedule:
-    # Runs at ~5.5 hour intervals to restart the session before the 6-hour limit.
     - cron: '30 0,5,11,16,22 * * *'
-  # Allows manual triggering from the GitHub Actions tab.
   workflow_dispatch:
 
 # -----------------------------------------------------------------
@@ -19,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360 
 
-    # 🚨 DEBIAN EXECUTION ENVIRONMENT 🚨
     container:
       image: debian:13
       options: --user root
@@ -28,67 +25,46 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 🚨 FIX: Installing crucial network dependencies (iproute2, net-tools)
-      - name: Install Dependencies and Supervisor
+      # Install dependencies (curl, gawk, bash, procps)
+      - name: Install Dependencies
         run: |
           apt-get update
-          # net-tools and iproute2 are often missing in minimal containers and needed for networking
-          apt-get install -y curl gawk bash supervisor procps iproute2 net-tools
+          apt-get install -y curl gawk bash procps
 
-      # 1. Setup and Start SSHX via Supervisor
-      - name: 1. Setup and Start SSHX via Supervisor
-        id: setup_sshx
+      # 1. Install and Start SSHX in Background
+      - name: 1. Install and Start SSHX in Background
+        id: start_sshx
         shell: bash
         run: |
-          echo "Setting up SSHX service..."
+          echo "Installing SSHX with one-liner..."
+          # 1. Install sshx (often installs to /usr/local/bin)
+          curl -sSf https://sshx.io/get | sh
           
-          # 1. Download and install sshx
-          curl -sSf -L https://sshx.io/get -o /usr/local/bin/sshx
-          chmod +x /usr/local/bin/sshx
+          SSHX_LOG="/tmp/sshx_link.log"
+          echo "Starting SSHX session and capturing output to $SSHX_LOG..."
           
-          # 2. Define the service configuration
-          SSHX_LOG_FILE="/tmp/sshx_supervisor.log"
-          CONFIG_FILE="/etc/supervisor/conf.d/sshx.conf"
+          # 2. Run the binary in the background and redirect output
+          > "$SSHX_LOG" # Clear the log file
+          sshx run --headless > "$SSHX_LOG" 2>&1 &
           
-          echo "[program:sshx]" > $CONFIG_FILE
-          echo "command=/usr/local/bin/sshx run --headless" >> $CONFIG_FILE
-          echo "autostart=true" >> $CONFIG_FILE
-          echo "autorestart=true" >> $CONFIG_FILE
-          echo "user=root" >> $CONFIG_FILE
-          echo "stdout_logfile=$SSHX_LOG_FILE" >> $CONFIG_FILE
-          echo "stderr_logfile=$SSHX_LOG_FILE" >> $CONFIG_FILE
-          
-          # 3. Start the supervisor and the sshx service
-          service supervisor start
-          supervisorctl reread
-          supervisorctl update
-          
-          # Wait a moment and confirm the process is running
-          sleep 5
-          if supervisorctl status sshx | grep -q "RUNNING"; then
-              echo "SSHX process confirmed running."
-          else
-              echo "::error::SSHX process failed to start under Supervisor."
-              echo "Supervisor Status:"
-              supervisorctl status
-              exit 1
-          fi
+          # 3. Set the process ID (PID) and log path
+          echo "sshx_pid=$!" >> $GITHUB_OUTPUT
+          echo "sshx_log_file=$SSHX_LOG" >> $GITHUB_OUTPUT
+          echo "SSHX process started with PID: $!"
 
-          echo "SSHX service is starting. Logs are at $SSHX_LOG_FILE"
-          echo "sshx_log_file=$SSHX_LOG_FILE" >> $GITHUB_OUTPUT
-
-      # 2. Wait for and Extract URL (Polling)
+      # 2. Wait for and Extract URL
       - name: 2. Wait for and Extract URL (Polling)
         id: extract_url
         shell: bash
         run: |
-          SSHX_LOG="${{ steps.setup_sshx.outputs.sshx_log_file }}"
-          TIMEOUT=60 # Max time to wait for URL
+          SSHX_LOG="${{ steps.start_sshx.outputs.sshx_log_file }}"
+          SSHX_PID="${{ steps.start_sshx.outputs.sshx_pid }}"
+          TIMEOUT=60
           
-          echo "Polling supervisor log for URL (max $TIMEOUT seconds)..."
+          echo "Polling log file for URL (max $TIMEOUT seconds)..."
           
           for i in $(seq 1 $TIMEOUT); do
-            # Extract the URL from the supervisor log (get the last match)
+            # Extract the URL from the log file
             SSHX_URL=$(grep 'Sharing session at:' "$SSHX_LOG" | gawk '{print $NF}' | tail -n 1)
             
             if [ -n "$SSHX_URL" ] && [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
@@ -107,7 +83,9 @@ jobs:
             echo "--- $SSHX_LOG content for final debug ---"
             cat "$SSHX_LOG"
             echo "-------------------------------------------"
-            exit 1 # This is why your job is failing! The URL isn't there.
+            # Kill the background process if it failed and exit
+            kill "$SSHX_PID" 2>/dev/null
+            exit 1
           fi
 
       # 3. Send URL to Discord Webhook
@@ -147,5 +125,7 @@ jobs:
       - name: 4. Keep Job Alive for Max Duration
         if: success() 
         run: |
-          echo "SSHX session is running and managed by Supervisor. Job will run for the full 6 hours."
-          tail -f /tmp/sshx_supervisor.log
+          SSHX_LOG="${{ steps.start_sshx.outputs.sshx_log_file }}"
+          echo "SSHX session is running in the background. Job will run for the full 6 hours."
+          # Keeps the job alive by monitoring the log file.
+          tail -f "$SSHX_LOG"
