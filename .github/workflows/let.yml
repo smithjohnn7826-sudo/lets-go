@@ -1,4 +1,4 @@
-name: 🚀 6-Hour SSHX Discord Notifier (Alpine Linux)
+name: 🚀 6-Hour SSHX Session Runner (Alpine Linux)
 
 # -----------------------------------------------------------------
 # 1. EVENT TRIGGERS
@@ -17,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360 
 
-    # 🚨 FINAL FIX: Switching to Alpine Linux for native musl support 🚨
     container:
       image: alpine/git:latest
       options: --user root
@@ -32,13 +31,12 @@ jobs:
           apk update
           apk add gawk bash procps curl util-linux
 
-      # 1. Install and Start SSHX with Error Capture
-      - name: 1. Install and Start SSHX with Error Capture
+      # 1. Install and Start SSHX Session
+      - name: 1. Install and Start SSHX Session
         id: start_sshx
         shell: bash
         run: |
           echo "Installing SSHX with one-liner..."
-          # The install script now runs natively on Alpine's musl environment
           curl -sSf https://sshx.io/get | sh
           
           SSHX_LOG="/tmp/sshx_link.log"
@@ -50,85 +48,52 @@ jobs:
           
           sleep 5
           
-          # Set the process ID (PID) and log path
-          echo "sshx_pid=$!" >> $GITHUB_OUTPUT 
+          # Set the log path for later use
           echo "sshx_log_file=$SSHX_LOG" >> $GITHUB_OUTPUT
-          echo "Script wrapper process started with PID: $!"
+          echo "SSHX process started in background."
 
-      # 2. Wait for and Extract URL (90 second Timeout + Guaranteed Log Print)
-      - name: 2. Wait for and Extract URL (Polling)
+      # 2. Wait for and Extract URL (Crucial Logging Step)
+      - name: 2. Wait for and Extract URL (Logging)
         id: extract_url
         shell: bash
         run: |
           SSHX_LOG="${{ steps.start_sshx.outputs.sshx_log_file }}"
-          SSHX_PID="${{ steps.start_sshx.outputs.sshx_pid }}"
-          TIMEOUT=90
-          SSHX_URL=""
+          TIMEOUT=90;
+          SSHX_URL="";
           
-          echo "Polling log file for URL (max $TIMEOUT seconds)..."
+          echo "Polling log file for URL (max $TIMEOUT seconds)...";
           
           for i in $(seq 1 $TIMEOUT); do
-            SSHX_URL=$(grep 'Sharing session at:' "$SSHX_LOG" | gawk '{print $NF}' | tail -n 1)
-            
+            SSHX_URL=$(grep 'Sharing session at:' "$SSHX_LOG" | gawk '{print $NF}' | tail -n 1);
             if [ -n "$SSHX_URL" ] && [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
-              echo "URL found after $i seconds."
-              break
+              echo "::notice::URL found after $i seconds.";
+              break;
             fi
-            sleep 1
-          done
+            sleep 1;
+          done;
           
-          # Print the log content to see if it finally worked or failed with a network message
-          echo "--- FINAL $SSHX_LOG content for debug ---"
+          # Log the URL (or lack thereof) to the GitHub Actions job summary
+          echo "--- SSHX Session Details ---"
           cat "$SSHX_LOG"
-          echo "------------------------------------------"
-
-          # Final Validation and Output
+          
           if [ -n "$SSHX_URL" ] && [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
+            echo "::notice::SSHX URL: $SSHX_URL"
+            # Setting the URL as output for access in the job summary, if needed
             echo "sshx_url=$SSHX_URL" >> $GITHUB_OUTPUT
-            echo "::notice::Successfully captured SSHX URL: $SSHX_URL"
+            
+            # Write the URL to a permanent file for visibility in the job artifacts (optional, but helpful)
+            echo $SSHX_URL > /tmp/sshx_url.txt
           else
-            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds. Please check the log content printed above."
-            kill "$SSHX_PID" 2>/dev/null
-            exit 1
+            echo "::error::Failed to capture SSHX URL after $TIMEOUT seconds. Check the log content above."
+            exit 1;
           fi
 
-      # 3. Send URL to Discord Webhook
-      - name: 3. Send URL to Discord Webhook
-        if: success() && steps.extract_url.outputs.sshx_url != ''
-        env:
-          SSHX_URL: ${{ steps.extract_url.outputs.sshx_url }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          WEBHOOK_DATA='{
-            "content": "**New SSHX Session Started!** 🚀",
-            "embeds": [{
-              "title": "Connect to Runner",
-              "description": "The 6-hour high-resource debugging session has started. **RECONNECT NOW** to the new link.",
-              "url": "${{ env.SSHX_URL }}",
-              "color": 3447003,
-              "fields": [
-                {
-                  "name": "SSHX Link",
-                  "value": "[Click to Connect](${{ env.SSHX_URL }})",
-                  "inline": false
-                },
-                {
-                  "name": "Run Workflow Link",
-                  "value": "[View Job Logs](${{ env.RUN_URL }})",
-                  "inline": false
-                }
-              ]
-            }]
-          }'
-          
-          curl -H "Content-Type: application/json" \
-               -d "$WEBHOOK_DATA" \
-               ${{ secrets.DISCORD_WEBHOOK_URL }}
-
-      # 4. Keep Job Alive for Max Duration
-      - name: 4. Keep Job Alive for Max Duration
+      # 3. Keep Job Alive for Max Duration
+      - name: 3. Keep Job Alive for Max Duration
         if: success() 
         run: |
           SSHX_LOG="${{ steps.start_sshx.outputs.sshx_log_file }}"
-          echo "SSHX session is running in the background. Job will run for the full 6 hours."
+          echo "SSHX session is running in the background."
+          echo "The job will now run for the full 6 hours, monitoring the log file to stay alive."
+          # Keeps the job alive by monitoring the log file.
           tail -f "$SSHX_LOG"
