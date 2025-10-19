@@ -25,7 +25,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Install dependencies (curl, gawk, bash, procps, and 'script' for the TTY wrapper)
+      # Install dependencies (util-linux is needed for 'script')
       - name: Install Dependencies
         run: |
           apt-get update
@@ -42,21 +42,12 @@ jobs:
           SSHX_LOG="/tmp/sshx_link.log"
           echo "Starting SSHX session and capturing ALL output to $SSHX_LOG..."
           
-          # Use 'script' to force a PTY, and send ALL output (stdout and stderr) to the log file
+          # Use 'script' to force a PTY, and send ALL output (stdout/stderr) to the log file
           > "$SSHX_LOG" # Clear the log file
           script -q -c "sshx run --headless" /dev/null > "$SSHX_LOG" 2>&1 &
           
-          # Give it a brief moment to crash, if it's going to.
+          # Give it a brief moment to stabilize or crash.
           sleep 5
-          
-          # Check if the log file contains an error before we even start the main poll.
-          if grep -q "Error" "$SSHX_LOG"; then
-              echo "::error::Immediate startup error detected!"
-              echo "--- Immediate $SSHX_LOG content for debug ---"
-              cat "$SSHX_LOG"
-              echo "------------------------------------------------"
-              # Do NOT exit here, let the next step poll just in case.
-          fi
           
           # Set the process ID (PID) and log path
           echo "sshx_pid=$!" >> $GITHUB_OUTPUT 
@@ -70,7 +61,8 @@ jobs:
         run: |
           SSHX_LOG="${{ steps.start_sshx.outputs.sshx_log_file }}"
           SSHX_PID="${{ steps.start_sshx.outputs.sshx_pid }}"
-          TIMEOUT=90 # Increased timeout
+          TIMEOUT=90
+          SSHX_URL="" # Initialize URL variable
           
           echo "Polling log file for URL (max $TIMEOUT seconds)..."
           
@@ -84,15 +76,17 @@ jobs:
             sleep 1
           done
           
+          # 🚨 CRITICAL FIX: Print the log content outside the conditional failure block.
+          echo "--- FINAL $SSHX_LOG content for debug ---"
+          cat "$SSHX_LOG"
+          echo "------------------------------------------"
+
           # Final Validation and Output
           if [ -n "$SSHX_URL" ] && [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
             echo "sshx_url=$SSHX_URL" >> $GITHUB_OUTPUT
             echo "::notice::Successfully captured SSHX URL: $SSHX_URL"
           else
-            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds. FINAL log content is critical for debugging."
-            echo "--- $SSHX_LOG content ---"
-            cat "$SSHX_LOG"
-            echo "-------------------------"
+            echo "::error::Failed to capture sshx URL after $TIMEOUT seconds. Please check the log content printed above."
             # Kill the background process and fail the step
             kill "$SSHX_PID" 2>/dev/null
             exit 1
