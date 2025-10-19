@@ -25,15 +25,17 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # Install bash and other dependencies
       - name: Install Dependencies
         run: |
           apt-get update
-          # Install curl, procps (for kill), and gawk (for reliable awk execution)
-          apt-get install -y curl procps gawk
+          # Install bash to ensure it's available for the next step's shell override
+          apt-get install -y curl procps gawk bash 
 
-      # 🚨 PERMANENT FIX APPLIED HERE 🚨
+      # 🚨 FINAL FIX APPLIED HERE: shell: bash 🚨
       - name: 1. Start SSHX and Capture Link (Polling Version)
         id: sshx_setup 
+        shell: bash # <--- THIS FIXES THE "[[ not found" ERROR
         run: |
           echo "Starting SSHX session and capturing URL..."
           
@@ -102,5 +104,4 @@ jobs:
         if: success() 
         run: |
           echo "SSHX session is running in the background. Job will run for the full 6 hours."
-          # This command monitors the log file and prevents GitHub from timing out the job.
           tail -f /tmp/sshx_link.log
