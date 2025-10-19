@@ -1,11 +1,13 @@
 name: 🚀 6-Hour SSHX Discord Notifier (Debian 13)
 
 # -----------------------------------------------------------------
-# 1. EVENT TRIGGERS
+# 1. EVENT TRIGGERS (When the job runs)
 # -----------------------------------------------------------------
 on:
   schedule:
+    # Runs at ~5.5 hour intervals to restart the session before the 6-hour limit.
     - cron: '30 0,5,11,16,22 * * *'
+  # Allows manual triggering from the GitHub Actions tab.
   workflow_dispatch:
 
 # -----------------------------------------------------------------
@@ -14,9 +16,11 @@ on:
 jobs:
   sshx_max_duration:
     name: Interactive Debug Shell (sshx)
+    # The host runner is Ubuntu, but the work runs inside Debian.
     runs-on: ubuntu-latest
     timeout-minutes: 360 
 
+    # 🚨 DEBIAN EXECUTION ENVIRONMENT 🚨
     container:
       image: debian:13
       options: --user root
@@ -25,14 +29,13 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 🚨 FIX: Install supervisor, gawk, and bash
+      # Install supervisor and all dependencies
       - name: Install Dependencies and Supervisor
         run: |
           apt-get update
-          # Install the service manager (supervisor) and tools
           apt-get install -y curl gawk bash supervisor procps
 
-      # 🚨 FIX: Set up sshx as a proper managed service
+      # 1. Setup and Start SSHX via Supervisor (Robust Service Management)
       - name: 1. Setup and Start SSHX via Supervisor
         id: setup_sshx
         shell: bash
@@ -43,7 +46,7 @@ jobs:
           curl -sSf -L https://sshx.io/get -o /usr/local/bin/sshx
           chmod +x /usr/local/bin/sshx
           
-          # 2. Define the service configuration for supervisor
+          # 2. Define the service configuration
           SSHX_LOG_FILE="/tmp/sshx_supervisor.log"
           
           cat << EOF > /etc/supervisor/conf.d/sshx.conf
@@ -61,23 +64,23 @@ EOF
           supervisorctl reread
           supervisorctl update
           echo "SSHX service is starting. Logs are at $SSHX_LOG_FILE"
-          echo "sshx_log_file=$SSHX_LOG_FILE" >> $GITHUB_OUTPUT # Pass log path to next step
+          echo "sshx_log_file=$SSHX_LOG_FILE" >> $GITHUB_OUTPUT
 
-      # 🚨 FIX: Poll the structured log file
-      - name: 2. Wait for and Extract URL (Supervisor Log Polling)
+      # 2. Wait for and Extract URL (POSIX-Compliant Polling)
+      - name: 2. Wait for and Extract URL (POSIX-Compliant Polling)
         id: extract_url
         shell: bash
         run: |
           SSHX_LOG="${{ steps.setup_sshx.outputs.sshx_log_file }}"
-          TIMEOUT=60 # Increased timeout for robustness
+          TIMEOUT=60 # Max time to wait for URL
           
           echo "Polling supervisor log for URL (max $TIMEOUT seconds)..."
           
           for i in $(seq 1 $TIMEOUT); do
-            # Extract the URL from the supervisor log
+            # Extract the URL from the supervisor log (get the last match)
             SSHX_URL=$(grep 'Sharing session at:' "$SSHX_LOG" | gawk '{print $NF}' | tail -n 1)
             
-            # Check if the URL is non-empty and starts with the expected prefix
+            # Use robust conditional checks
             if [ -n "$SSHX_URL" ] && [[ "$SSHX_URL" == "https://sshx.io/s/"* ]]; then
               echo "URL found after $i seconds."
               break
@@ -94,10 +97,11 @@ EOF
             echo "--- $SSHX_LOG content for final debug ---"
             cat "$SSHX_LOG"
             echo "-------------------------------------------"
-            # No need to manually kill the process; supervisor manages it.
+            # Supervisor is running, no need to manually kill the process.
             exit 1
           fi
 
+      # 3. Send URL to Discord Webhook (Corrected and validated syntax)
       - name: 3. Send URL to Discord Webhook
         if: success() && steps.extract_url.outputs.sshx_url != ''
         env:
@@ -122,9 +126,10 @@ EOF
                -d "$WEBHOOK_DATA" \
                ${{ secrets.DISCORD_WEBHOOK_URL }}
 
+      # 4. Keep Job Alive for Max Duration
       - name: 4. Keep Job Alive for Max Duration
         if: success() 
         run: |
           echo "SSHX session is running and managed by Supervisor. Job will run for the full 6 hours."
-          # Monitor the supervisor log to keep the job alive
+          # Keeps the job alive by monitoring the supervisor log file.
           tail -f /tmp/sshx_supervisor.log
